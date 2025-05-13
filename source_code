@@ -1,0 +1,389 @@
+*&---------------------------------------------------------------------*
+*& Report ZBK_FUNC_WRK
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT zbk_func_wrk.
+
+INCLUDE zbk_func_top.
+INCLUDE zbk_func_frm.
+
+
+START-OF-SELECTION.
+  PERFORM fetch_function_data.
+  PERFORM fetch_descriptions.
+  PERFORM set_fc.
+  PERFORM display_alv.
+  PERFORM top_of_page.
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+*&---------------------------------------------------------------------*
+*&  Include           ZBK_FUNC_TOP
+*&---------------------------------------------------------------------*
+
+TABLES: tfdir, fupararef, dd03l, dd02t, dd03t, dd04t, tftit.
+
+TYPES: BEGIN OF ty_output,
+         funcname   TYPE tfdir-funcname,      " Fonksiyonun Adı
+         paramtype  TYPE fupararef-paramtype, " Export/Table (E/T)
+         parameter  TYPE fupararef-parameter, " Parametre Adı
+         tabname    TYPE fupararef-structure, " Yapı İsmi (Structure, Alan)
+         fieldname  TYPE dd03l-fieldname,     " Alan Adı (Component)
+         rollname   TYPE dd03l-rollname,      " Component Type (Domain/Rollname)
+         datatype   TYPE dd03l-datatype,      " Veri Tipi
+         length     TYPE dd03l-leng,          " Uzunluk
+         decimals   TYPE dd03l-decimals,      " Ondalık Kısım
+         short_desc TYPE tftit-stext,         " Açıklama (Short Description)
+       END OF ty_output.
+
+DATA: lt_output TYPE TABLE OF ty_output,      " Fonksiyon modülü parametreleri listesi
+      ls_output TYPE ty_output.               " Geçici kayıt değişkeni
+
+DATA: lt_params TYPE TABLE OF fupararef,
+      ls_param  TYPE fupararef.
+
+TYPES: BEGIN OF ty_dd03l,
+         tabname   TYPE tabname,
+         fieldname TYPE fieldname,
+         rollname  TYPE rollname,
+         datatype  TYPE char4,
+         leng      TYPE ddleng,
+         decimals  TYPE decimals,
+       END OF ty_dd03l.
+
+DATA: lt_dd03l TYPE TABLE OF ty_dd03l,
+      ls_dd03l TYPE ty_dd03l.
+
+
+DATA: lt_fieldcat TYPE TABLE OF slis_fieldcat_alv,  " ALV için field catalog
+      ls_fieldcat TYPE slis_fieldcat_alv.
+
+DATA: lt_header TYPE slis_t_listheader,             "Top_Of_Page için header
+      ls_header TYPE slis_listheader.
+
+DATA: lv_date TYPE char10.                          "Dinamik tarih bilgisini tutan değişken
+
+" ALV başlık (TOP-OF-PAGE) sadece bir kez yazdırılsın diye kullanılan kontrol değişkeni.
+" İlk başta 'FALSE' olarak ayarlanır, çalıştıktan sonra 'TRUE' yapılır.
+DATA: gv_top_displayed TYPE abap_bool VALUE abap_false.
+
+DATA: lt_tftit TYPE TABLE OF tftit,    " TFTIT Tablosu
+      lt_tfdir TYPE TABLE OF tfdir,    " TFDIR Tablosu
+      lt_dd02t TYPE TABLE OF dd02t,    " Tablo açıklamaları
+      lt_dd04t TYPE TABLE OF dd04t,    " Alan açıklamaları
+      ls_tftit TYPE tftit,
+      ls_tfdir TYPE tfdir,
+      ls_dd02t TYPE dd02t,
+      ls_dd04t TYPE dd04t.
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.
+SELECT-OPTIONS: s_func FOR tfdir-funcname OBLIGATORY.        " Kullanıcıdan fonksiyon adı al
+SELECTION-SCREEN END OF BLOCK b1.
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+*&---------------------------------------------------------------------*
+*&  Include           ZBK_FUNC_FRM
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*&      Form  FETCH_FUNCTION_DATA
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM fetch_function_data .
+
+  " Çıktı tablosunu temizle
+  CLEAR lt_output.
+
+  " Öncelikle TFDIR tablosundan seçilen fonksiyon adlarını çek
+  SELECT * FROM tfdir
+    INTO TABLE @lt_tfdir
+    WHERE funcname IN @s_func.
+
+  LOOP AT lt_tfdir INTO ls_tfdir.
+
+    " Fonksiyonun açıklamasını TFTIT tablosundan al
+    READ TABLE lt_tftit INTO ls_tftit WITH KEY funcname = ls_tfdir-funcname spras = sy-langu.
+
+    " Bu fonksiyona ait export (E) ve table (T) parametrelerini çek
+    SELECT * FROM fupararef
+      INTO TABLE @lt_params
+      WHERE funcname = @ls_tfdir-funcname
+        AND paramtype IN ('E', 'T').
+
+    LOOP AT lt_params INTO ls_param.
+
+      " Parametredeki yapı adını al
+      DATA(lv_struct) = ls_param-structure.
+
+      " Eğer bu bir tablo tipi ise rowtype'ı DD40L tablosundan çöz
+      SELECT SINGLE rowtype INTO @DATA(lv_rowtype)
+        FROM dd40l
+        WHERE typename = @lv_struct.
+
+      IF sy-subrc = 0 AND lv_rowtype IS NOT INITIAL.
+        lv_struct = lv_rowtype. " Rowtype varsa onu esas al
+      ENDIF.
+
+      " DD03L'den alan bilgilerini çek
+      CLEAR lt_dd03l.
+      SELECT tabname, fieldname, rollname, datatype, leng, decimals
+        INTO TABLE @lt_dd03l
+        FROM dd03l
+        WHERE tabname = @lv_struct.
+
+      LOOP AT lt_dd03l INTO ls_dd03l.
+
+        CLEAR ls_output.
+
+        " Parametre ve alan bilgilerini output yapısına aktar
+        ls_output-funcname   = ls_param-funcname.
+        ls_output-paramtype  = ls_param-paramtype.
+        ls_output-parameter  = ls_param-parameter.
+        ls_output-tabname    = lv_struct.
+        ls_output-fieldname  = ls_dd03l-fieldname.
+        ls_output-rollname   = ls_dd03l-rollname.
+        ls_output-datatype   = ls_dd03l-datatype.
+        ls_output-length     = ls_dd03l-leng.
+        ls_output-decimals   = ls_dd03l-decimals.
+
+        IF sy-subrc = 0 AND ls_tftit-stext IS NOT INITIAL.
+          ls_output-short_desc = ls_tftit-stext. " Fonksiyon açıklaması
+        ENDIF.
+
+        APPEND ls_output TO lt_output.
+
+      ENDLOOP.
+
+    ENDLOOP.
+
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FETCH_DESCRIPTIONS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM fetch_descriptions .
+
+* Fonksiyon modülü açıklamalarını al
+  SELECT * FROM tftit INTO TABLE lt_tftit WHERE spras = sy-langu.
+
+* Tüm fonksiyon modüllerini çek
+  SELECT * FROM tfdir INTO TABLE lt_tfdir.
+
+* Tablo açıklamalarını al (Line Type / Structure açıklamaları)
+  SELECT * FROM dd02t INTO TABLE lt_dd02t WHERE ddlanguage = sy-langu.
+
+* Alan açıklamalarını al
+  SELECT * FROM dd04t INTO TABLE lt_dd04t WHERE ddlanguage = sy-langu.
+
+  LOOP AT lt_output INTO ls_output.
+
+    " Önce Fonksiyon Modülü Açıklamasını Getir
+    READ TABLE lt_tftit INTO ls_tftit WITH KEY funcname = ls_output-funcname.
+    IF sy-subrc = 0.
+      ls_output-short_desc = ls_tftit-stext.
+    ENDIF.
+
+    " Line Type veya Structure Açıklamasını Getir
+    IF ls_output-tabname IS NOT INITIAL.
+      READ TABLE lt_dd02t INTO ls_dd02t WITH KEY tabname = ls_output-tabname.
+      IF sy-subrc = 0.
+        ls_output-short_desc = ls_dd02t-ddtext.  " Tablo açıklaması
+      ENDIF.
+    ENDIF.
+
+    " Alan Açıklamasını Getir
+    IF ls_output-fieldname IS NOT INITIAL.
+      READ TABLE lt_dd04t INTO ls_dd04t WITH KEY rollname = ls_output-rollname.
+      IF sy-subrc = 0.
+        ls_output-short_desc = ls_dd04t-ddtext.  " Alan açıklaması
+      ENDIF.
+    ENDIF.
+
+    MODIFY lt_output FROM ls_output.
+
+  ENDLOOP.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  SET_FC
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM set_fc .
+  " Field catalog oluştur
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'FUNCNAME'.
+  ls_fieldcat-seltext_m = 'Fonksiyon Adı'.
+  ls_fieldcat-outputlen  = 30.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'PARAMTYPE'.
+  ls_fieldcat-seltext_m = 'Parametre Tipi'.
+  ls_fieldcat-outputlen  = 5..
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'PARAMETER'.
+  ls_fieldcat-seltext_m = 'Parametre Adı'.
+  ls_fieldcat-outputlen  = 15.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'TABNAME'.
+  ls_fieldcat-seltext_m = 'Alan Türü Adı'.
+  ls_fieldcat-outputlen  = 25.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'FIELDNAME'.
+  ls_fieldcat-seltext_m = 'Alan Adı'.
+  ls_fieldcat-outputlen  = 15.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'ROLLNAME'.
+  ls_fieldcat-seltext_m = 'Alan Tipi'.
+  ls_fieldcat-outputlen  = 10.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'DATATYPE'.
+  ls_fieldcat-seltext_m = 'Veri Tipi'.
+  ls_fieldcat-outputlen  = 10.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'LENGTH'.
+  ls_fieldcat-seltext_m = 'Uzunluk'.
+  ls_fieldcat-outputlen  = 5.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'DECIMALS'.
+  ls_fieldcat-seltext_m = 'Ondalık Kısım'.
+  ls_fieldcat-outputlen  = 5.
+  APPEND ls_fieldcat TO lt_fieldcat.
+
+  CLEAR ls_fieldcat.
+  ls_fieldcat-fieldname = 'SHORT_DESC'.
+  ls_fieldcat-seltext_m = 'Açıklama'.
+  ls_fieldcat-outputlen  = 30.
+  APPEND ls_fieldcat TO lt_fieldcat.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  DISPLAY_ALV
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM display_alv .
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+    EXPORTING
+*     I_INTERFACE_CHECK      = ' '
+*     I_BYPASSING_BUFFER     = ' '
+*     I_BUFFER_ACTIVE        = ' '
+      i_callback_program     = sy-repid
+*     I_CALLBACK_PF_STATUS_SET          = ' '
+*     I_CALLBACK_USER_COMMAND           = ' '
+      i_callback_top_of_page = 'TOP_OF_PAGE'
+*     I_CALLBACK_HTML_TOP_OF_PAGE       = ' '
+*     I_CALLBACK_HTML_END_OF_LIST       = ' '
+*     I_STRUCTURE_NAME       =
+*     I_BACKGROUND_ID        = ' '
+*     i_grid_title           = ''
+*     I_GRID_SETTINGS        =
+*     is_layout              =
+      it_fieldcat            = lt_fieldcat
+*     IT_EXCLUDING           =
+*     IT_SPECIAL_GROUPS      =
+*     IT_SORT                =
+*     IT_FILTER              =
+*     IS_SEL_HIDE            =
+*     I_DEFAULT              = 'X'
+*     I_SAVE                 = ' '
+*     IS_VARIANT             =
+*     IT_EVENTS              =
+*     IT_EVENT_EXIT          =
+*     IS_PRINT               =
+*     IS_REPREP_ID           =
+*     I_SCREEN_START_COLUMN  = 0
+*     I_SCREEN_START_LINE    = 0
+*     I_SCREEN_END_COLUMN    = 0
+*     I_SCREEN_END_LINE      = 0
+*     I_HTML_HEIGHT_TOP      = 0
+*     I_HTML_HEIGHT_END      = 0
+*     IT_ALV_GRAPHICS        =
+*     IT_HYPERLINK           =
+*     IT_ADD_FIELDCAT        =
+*     IT_EXCEPT_QINFO        =
+*     IR_SALV_FULLSCREEN_ADAPTER        =
+*   IMPORTING
+*     E_EXIT_CAUSED_BY_CALLER           =
+*     ES_EXIT_CAUSED_BY_USER =
+    TABLES
+      t_outtab               = lt_output
+    EXCEPTIONS
+      program_error          = 1
+      OTHERS                 = 2.
+  IF sy-subrc <> 0.
+    MESSAGE 'ALV görüntülenirken hata oluştu!' TYPE 'E'.
+  ENDIF.
+  .
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  TOP_OF_PAGE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM top_of_page .
+
+  " Eğer daha önce gösterildiyse çık
+  IF gv_top_displayed = abap_true.
+    EXIT.
+  ENDIF.
+
+
+  CLEAR: ls_header.
+  ls_header-typ = 'H'.
+  ls_header-info = 'Fonksiyon Modülü Parametreleri'.
+  APPEND ls_header TO lt_header.
+
+  CLEAR: ls_header.
+  ls_header-typ = 'S'.
+  ls_header-key = 'Tarih:'.
+  CONCATENATE sy-datum+6(2)
+              '.'
+              sy-datum+4(2)
+              '.'
+              sy-datum+0(4)
+              INTO lv_date.
+  ls_header-info = lv_date.
+  APPEND ls_header TO lt_header.
+
+  CALL FUNCTION 'REUSE_ALV_COMMENTARY_WRITE'
+    EXPORTING
+      it_list_commentary = lt_header.
+
+  " Bir kez çalıştığını işaretle
+  gv_top_displayed = abap_true.
+
+ENDFORM.
